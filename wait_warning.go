@@ -25,9 +25,11 @@ func NewWaitingWarning(ctx context.Context, frequency time.Duration, format stri
 		interrupt: make(chan interface{}),
 	}
 
+	caller := GetCaller(1)
+
 	// start thread
 	go func() {
-		runWaitWarning(ctx, fmt.Sprintf(format, values...), GetCaller(1), frequency,
+		runWaitWarning(ctx, fmt.Sprintf(format, values...), caller, frequency,
 			result.interrupt)
 	}()
 
