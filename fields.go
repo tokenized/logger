@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strconv"
 )
 
@@ -46,7 +47,7 @@ func (f JSONMarshallerField) Name() string {
 }
 
 func (f JSONMarshallerField) ValueJSON() string {
-	if f.value == nil {
+	if IsNil(f.value) {
 		return JSONNull
 	}
 
@@ -74,7 +75,7 @@ func (f JSONField) Name() string {
 }
 
 func (f JSONField) ValueJSON() string {
-	if f.value == nil {
+	if IsNil(f.value) {
 		return JSONNull
 	}
 
@@ -102,7 +103,7 @@ func (f StringerField) Name() string {
 }
 
 func (f StringerField) ValueJSON() string {
-	if f.value == nil {
+	if IsNil(f.value) {
 		return JSONNull
 	}
 
@@ -432,7 +433,7 @@ func (f StringersField) ValueJSON() string {
 			result += ","
 		}
 
-		if v == nil {
+		if IsNil(v) {
 			result += JSONNull
 			continue
 		}
@@ -496,7 +497,7 @@ func (f JSONMarshallersField) ValueJSON() string {
 			result += ","
 		}
 
-		if v == nil {
+		if IsNil(v) {
 			result += JSONNull
 			continue
 		}
@@ -536,7 +537,7 @@ func (f JSONsField) ValueJSON() string {
 			result += ","
 		}
 
-		if v == nil {
+		if IsNil(v) {
 			result += JSONNull
 			continue
 		}
@@ -624,4 +625,17 @@ func Timestamp(name string, nanosecondsSinceEpoch int64) *TimestampField {
 		name:  name,
 		value: float64(nanosecondsSinceEpoch) / 1e9,
 	}
+}
+
+func IsNil(a interface{}) bool {
+	if a == nil {
+		return true
+	}
+
+	value := reflect.ValueOf(a)
+	if value.Kind() == reflect.Ptr && value.IsNil() {
+		return true
+	}
+
+	return false
 }
