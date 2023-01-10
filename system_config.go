@@ -3,12 +3,11 @@ package logger
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"sync"
 	"time"
-
-	"github.com/pkg/errors"
 )
 
 var (
@@ -40,11 +39,9 @@ type systemConfig struct {
 	minLevel   Level
 	stackLevel Level
 	isText     bool
-	output     Output
+	output     io.Writer
 	fields     []Field
 	format     int
-
-	first bool
 
 	lock sync.Mutex
 }
@@ -80,21 +77,11 @@ func newSystemConfig(isDevelopment, isText bool, filePath string) (systemConfig,
 		result.minLevel = LevelVerbose
 	}
 
-	if len(filePath) > 0 {
-		if filePath == "dummy" { // for benchmarking
-			result.output = &dummyWriter{}
-		} else {
-			file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-			if err != nil {
-				panic(errors.Wrap(err, "open file"))
-				return result, errors.Wrap(err, "open file")
-			}
-
-			result.output = &fileWriter{file: file}
-		}
-	} else {
-		result.output = &printer{}
+	output, err := newOutput(filePath)
+	if err != nil {
+		return result, err
 	}
+	result.output = output
 
 	return result, nil
 }
@@ -116,21 +103,11 @@ func newSystemConfigFromSetup(setup SetupConfig) (systemConfig, error) {
 
 	result.minLevel = setup.Level
 
-	if len(setup.Path) > 0 {
-		if setup.Path == "dummy" { // for benchmarking
-			result.output = &dummyWriter{}
-		} else {
-			file, err := os.OpenFile(setup.Path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-			if err != nil {
-				panic(errors.Wrap(err, "open file"))
-				return result, errors.Wrap(err, "open file")
-			}
-
-			result.output = &fileWriter{file: file}
-		}
-	} else {
-		result.output = &printer{}
+	output, err := newOutput(setup.Path)
+	if err != nil {
+		return result, err
 	}
+	result.output = output
 
 	return result, nil
 }
@@ -195,18 +172,6 @@ func (config *systemConfig) removeSubSystem() {
 	}
 }
 
-func (config *systemConfig) writeField(format string, values ...interface{}) {
-	if config.first {
-		config.first = false
-	} else if config.isText {
-		config.output.Write(tab)
-	} else {
-		config.output.Write(comma)
-	}
-
-	fmt.Fprintf(config.output, format, values...)
-}
-
 func (config *systemConfig) writeEntry(level Level, caller string, fields []Field,
 	format string, values ...interface{}) error {
 
@@ -215,6 +180,30 @@ func (config *systemConfig) writeEntry(level Level, caller string, fields []Fiel
 	}
 
 	return config.writeJSONEntry(level, caller, fields, format, values...)
+}
+
+type entry struct {
+	isJSON    bool
+	delimiter []byte
+	values    [][]byte
+}
+
+func (e *entry) writeField(format string, values ...interface{}) {
+	e.values = append(e.values, []byte(fmt.Sprintf(format, values...)))
+}
+
+func (e *entry) addValue(value []byte) {
+	e.values = append(e.values, value)
+}
+
+func (e *entry) write(w io.Writer) error {
+	b := bytes.Join(e.values, e.delimiter)
+	if e.isJSON {
+		b = append(openCurly, b...)
+		b = append(b, closeCurlyNewLine...)
+	}
+	_, err := w.Write(b)
+	return err
 }
 
 func (config *systemConfig) writeJSONEntry(level Level, caller string, fields []Field,
@@ -228,15 +217,14 @@ func (config *systemConfig) writeJSONEntry(level Level, caller string, fields []
 		return nil // Level is below minimum
 	}
 
-	config.output.Lock()
-	defer config.output.Unlock()
-
-	config.first = true
-	config.output.Write(openCurly)
+	entry := entry{
+		isJSON:    true,
+		delimiter: comma,
+	}
 
 	// Write Level
 	if config.format&IncludeLevel != 0 {
-		config.writeField("\"level\":\"%s\"", levelName[level+levelOffset])
+		entry.writeField("\"level\":\"%s\"", levelName[level+levelOffset])
 	}
 
 	// Create log entry
@@ -244,7 +232,7 @@ func (config *systemConfig) writeJSONEntry(level Level, caller string, fields []
 
 	// Append timestamp
 	if config.format&IncludeTimeStamp != 0 {
-		config.writeField("\"ts\":%d.%06d", now.Unix(), now.Nanosecond()/1e3)
+		entry.writeField("\"ts\":%d.%06d", now.Unix(), now.Nanosecond()/1e3)
 	}
 
 	// Append Date
@@ -275,23 +263,23 @@ func (config *systemConfig) writeJSONEntry(level Level, caller string, fields []
 			name += "time"
 		}
 
-		config.writeField("\"%s\":\"%s\"", name, string(datetime.Bytes()))
+		entry.writeField("\"%s\":\"%s\"", name, string(datetime.Bytes()))
 	}
 
 	// Append Caller
 	if config.format&IncludeCaller != 0 {
-		config.writeField("\"caller\":%s", strconv.Quote(caller))
+		entry.writeField("\"caller\":%s", strconv.Quote(caller))
 	}
 
 	// Append actual log entry
-	config.writeField("\"msg\":%s", strconv.Quote(fmt.Sprintf(format, values...)))
+	entry.writeField("\"msg\":%s", strconv.Quote(fmt.Sprintf(format, values...)))
 
 	config.lock.Lock()
 	for i, field := range config.fields {
 		if fieldExists(field.Name(), config.fields[:i]) {
 			continue // skip duplicate field name
 		}
-		config.writeField("\"%s\":%s", field.Name(), field.ValueJSON())
+		entry.writeField("\"%s\":%s", field.Name(), field.ValueJSON())
 	}
 	config.lock.Unlock()
 
@@ -299,10 +287,10 @@ func (config *systemConfig) writeJSONEntry(level Level, caller string, fields []
 		if fieldExists(field.Name(), config.fields) || fieldExists(field.Name(), fields[:i]) {
 			continue // skip duplicate field name
 		}
-		config.writeField("\"%s\":%s", field.Name(), field.ValueJSON())
+		entry.writeField("\"%s\":%s", field.Name(), field.ValueJSON())
 	}
 
-	config.output.Write(closeCurlyNewLine)
+	entry.write(config.output)
 
 	switch level {
 	case LevelFatal:
@@ -326,14 +314,13 @@ func (config *systemConfig) writeTextEntry(level Level, caller string, fields []
 	}
 
 	// Write full entry to output
-	config.output.Lock()
-	defer config.output.Unlock()
-
-	config.first = true
+	entry := entry{
+		delimiter: tab,
+	}
 
 	// Write Level
 	if config.format&IncludeLevel != 0 {
-		config.writeField("%s", levelName[level+levelOffset])
+		entry.writeField("%s", levelName[level+levelOffset])
 	}
 
 	// Create log entry
@@ -341,7 +328,7 @@ func (config *systemConfig) writeTextEntry(level Level, caller string, fields []
 
 	// Append timestamp
 	if config.format&IncludeTimeStamp != 0 {
-		config.writeField("ts %d.%06d", now.Unix(), now.Nanosecond()/1e3)
+		entry.writeField("ts %d.%06d", now.Unix(), now.Nanosecond()/1e3)
 	}
 
 	// Append Date
@@ -364,23 +351,23 @@ func (config *systemConfig) writeTextEntry(level Level, caller string, fields []
 	}
 
 	if datetime.Len() > 0 {
-		config.writeField("%s", string(datetime.Bytes()))
+		entry.writeField("%s", string(datetime.Bytes()))
 	}
 
 	// Append Caller
 	if config.format&IncludeCaller != 0 {
-		config.writeField(caller)
+		entry.writeField(caller)
 	}
 
 	// Append actual log entry
-	config.writeField("%s", fmt.Sprintf(format, values...))
+	entry.writeField("%s", fmt.Sprintf(format, values...))
 
 	config.lock.Lock()
 	for i, field := range config.fields {
 		if fieldExists(field.Name(), config.fields[:i]) {
 			continue // skip duplicate field name
 		}
-		fmt.Fprintf(config.output, ", %s: %s", field.Name(), field.ValueJSON())
+		entry.writeField("%s: %s", field.Name(), field.ValueJSON())
 	}
 	config.lock.Unlock()
 
@@ -388,10 +375,11 @@ func (config *systemConfig) writeTextEntry(level Level, caller string, fields []
 		if fieldExists(field.Name(), config.fields) || fieldExists(field.Name(), fields[:i]) {
 			continue // skip duplicate field name
 		}
-		fmt.Fprintf(config.output, ", %s: %s", field.Name(), field.ValueJSON())
+		entry.writeField("%s: %s", field.Name(), field.ValueJSON())
 	}
 
-	config.output.Write(newLine)
+	entry.addValue(newLine)
+	entry.write(config.output)
 
 	switch level {
 	case LevelFatal:
@@ -411,61 +399,4 @@ func fieldExists(name string, fields []Field) bool {
 	}
 
 	return false
-}
-
-type Output interface {
-	Write([]byte) (int, error)
-	Lock()
-	Unlock()
-}
-
-type fileWriter struct {
-	file *os.File
-	lock sync.Mutex
-}
-
-func (w *fileWriter) Write(b []byte) (int, error) {
-	return w.file.Write(b)
-}
-
-func (w *fileWriter) Lock() {
-	w.lock.Lock()
-}
-
-func (w *fileWriter) Unlock() {
-	w.file.Sync()
-	w.lock.Unlock()
-}
-
-type printer struct {
-	lock sync.Mutex
-}
-
-func (p *printer) Write(b []byte) (int, error) {
-	return os.Stderr.Write(b)
-}
-
-func (p *printer) Lock() {
-	p.lock.Lock()
-}
-
-func (p *printer) Unlock() {
-	os.Stderr.Sync()
-	p.lock.Unlock()
-}
-
-type dummyWriter struct {
-	lock sync.Mutex
-}
-
-func (d *dummyWriter) Write(b []byte) (int, error) {
-	return len(b), nil
-}
-
-func (d *dummyWriter) Lock() {
-	d.lock.Lock()
-}
-
-func (d *dummyWriter) Unlock() {
-	d.lock.Unlock()
 }
