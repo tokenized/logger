@@ -37,6 +37,30 @@ func String(name string, value string) *StringField {
 	}
 }
 
+type StringPtrField struct {
+	name  string
+	value *string
+}
+
+func (f StringPtrField) Name() string {
+	return f.name
+}
+
+func (f StringPtrField) ValueJSON() string {
+	if f.value == nil {
+		return JSONNull
+	}
+
+	return strconv.Quote(*f.value)
+}
+
+func StringPtr(name string, value *string) *StringPtrField {
+	return &StringPtrField{
+		name:  name,
+		value: value,
+	}
+}
+
 type JSONMarshallerField struct {
 	name  string
 	value json.Marshaler

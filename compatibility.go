@@ -6,9 +6,9 @@ import (
 )
 
 // Logger defines an interface that is compatible with golang's standard log system. To use it
-//   configure a context using this packages setup functions, then create a LoggerObject with
-//   NewLoggerObject and that context. It is then mostly interchangeable with a golang log object
-//   though you still need to use this interface as the type in function parameters.
+// configure a context using this packages setup functions, then create a LoggerObject with
+// NewLoggerObject and that context. It is then mostly interchangeable with a golang log object
+// though you still need to use this interface as the type in function parameters.
 type Logger interface {
 	Print(v ...interface{})
 	Printf(format string, v ...interface{})

@@ -243,9 +243,11 @@ func Panic(ctx context.Context, format string, values ...interface{}) error {
 }
 
 // Log an entry to the main Outputs if:
-//   There is no subsystem specified or if the current subsystem is included in the attached
-//     Config.IncludedSubSystems.
-//   And the level is equal to or above the specified minimum logging level.
+//
+//	There is no subsystem specified or if the current subsystem is included in the attached
+//	Config.IncludedSubSystems.
+//	And the level is equal to or above the specified minimum logging level.
+//
 // Logs to the Config.SubSystems if the level is above minimum.
 func Log(ctx context.Context, level Level, format string, values ...interface{}) error {
 	return LogDepth(ctx, level, GetCaller(1), format, values...)
